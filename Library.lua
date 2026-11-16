@@ -494,23 +494,17 @@ local function getSafeGuiParent()
 		return type(g) == "function" and g() or nil
 	end)
 	if okHui and hui then return hui end
-	local okCore, core = pcall(function() return game:GetService("CoreGui") end)
-	if okCore and core then
-		local okWrite = pcall(function()
-			local test = Instance.new("Folder")
-			test.Parent = core
-			test:Destroy()
-		end)
-		if okWrite then return core end
-	end
 	local lp = Players.LocalPlayer
 	if not lp then
 		pcall(function() lp = Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end)
 	end
 	if lp then
-		return lp:FindFirstChildOfClass("PlayerGui") or lp:WaitForChild("PlayerGui", 5)
+		local pg = lp:FindFirstChildOfClass("PlayerGui") or lp:WaitForChild("PlayerGui", 5)
+		if pg then return pg end
 	end
-	return game:GetService("CoreGui")
+	local okCore, core = pcall(function() return game:GetService("CoreGui") end)
+	if okCore and core then return core end
+	return Players.LocalPlayer:WaitForChild("PlayerGui")
 end
 
 local function buildScreen()
@@ -3317,94 +3311,195 @@ function WindowMeta:CreateToggleButton(opts)
 	opts = opts or {}
 	if self.toggleBtn and self.toggleBtn.frame then
 		pcall(function() self.toggleBtn.frame:Destroy() end)
+		self.toggleBtn = nil
 	end
 
-	local btnSize = opts.Size or 42
-	local btnRadius = opts.Radius or 10
+	buildScreen()
+	local btnParent = Screen or Stage
 
-	local startPos = opts.Position or Vector2.new(20, 20)
+	local isCompact = opts.Compact == true
+	local btnW = opts.Width or (isCompact and 42 or 110)
+	local btnH = opts.Height or 36
+	local btnRadius = opts.Radius or (isCompact and 10 or 18)
+
+	-- Safe position below Roblox topbar (Y=70 avoids topbar icons completely)
+	local startPos
+	if typeof(opts.Position) == "UDim2" then
+		startPos = opts.Position
+	elseif typeof(opts.Position) == "Vector2" then
+		startPos = UDim2.fromOffset(opts.Position.X, opts.Position.Y)
+	else
+		startPos = UDim2.new(0, 20, 0, 70)
+	end
+
 	local btnFrame = New("Frame", {
 		Name = "GenerousToggleButton",
-		Parent = Screen,
-		Size = UDim2.fromOffset(btnSize, btnSize),
-		Position = UDim2.fromOffset(startPos.X, startPos.Y),
+		Size = UDim2.fromOffset(btnW, btnH),
+		Position = startPos,
 		BackgroundColor3 = Color3.fromRGB(12, 13, 16),
+		BackgroundTransparency = 0,
 		BorderSizePixel = 0,
-		ZIndex = 9999,
+		ZIndex = 100000,
 		Active = true,
-	})
+		Visible = true,
+	}, btnParent)
+
 	New("UICorner", { CornerRadius = UDim.new(0, btnRadius) }, btnFrame)
+
 	local stroke = New("UIStroke", {
-		Color = Color3.fromRGB(38, 38, 44),
-		Thickness = 1,
+		Color = Color3.fromRGB(39, 39, 45),
+		Thickness = 1.2,
 		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
 	}, btnFrame)
 
-	local icon = Glyph(btnFrame, opts.Icon or "SLIDERS_H", 16)
-	icon:center(btnSize * 0.5, btnSize * 0.5)
-	icon:paint(Accent, 1)
+	-- Glowing status dot
+	local dot = New("Frame", {
+		Name = "Dot",
+		Size = UDim2.fromOffset(7, 7),
+		Position = UDim2.fromOffset(isCompact and 8 or 12, math.floor((btnH - 7) * 0.5)),
+		BackgroundColor3 = Accent,
+		BorderSizePixel = 0,
+		ZIndex = 100001,
+	}, btnFrame)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
 
+	-- Label
+	local btnText = opts.Text or "Generous"
+	local label = New("TextLabel", {
+		Name = "Label",
+		Text = btnText,
+		TextColor3 = Color3.fromRGB(240, 240, 245),
+		TextSize = 12,
+		FontFace = FontSemi or Font.new(FONT_ID, Enum.FontWeight.SemiBold),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(btnW - (isCompact and 16 or 28), btnH),
+		Position = UDim2.fromOffset(isCompact and 16 or 26, 0),
+		TextXAlignment = isCompact and Enum.TextXAlignment.Center or Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		ZIndex = 100001,
+		Visible = not isCompact,
+	}, btnFrame)
+
+	-- If compact, add glyph/icon
+	local icon = nil
+	if isCompact then
+		icon = Glyph(btnFrame, opts.Icon or "SLIDERS_H", 16)
+		icon:center(btnW * 0.5, btnH * 0.5)
+		icon:paint(Accent, 1)
+	end
+
+	-- Transparent click capture button (Guarantees PC click + Mobile touch tap)
+	local clickBtn = New("TextButton", {
+		Name = "ClickTrigger",
+		Text = "",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Position = UDim2.fromScale(0, 0),
+		ZIndex = 100002,
+		Active = true,
+	}, btnFrame)
+
+	local function updateBtnState(isOpen)
+		if isOpen then
+			dot.BackgroundColor3 = Accent
+			stroke.Color = Accent:Lerp(Color3.fromRGB(39, 39, 45), 0.4)
+			if label then
+				label.TextColor3 = Color3.fromRGB(255, 255, 255)
+			end
+			if icon then icon:paint(Accent, 1) end
+		else
+			dot.BackgroundColor3 = Color3.fromRGB(120, 120, 130)
+			stroke.Color = Color3.fromRGB(39, 39, 45)
+			if label then
+				label.TextColor3 = Color3.fromRGB(180, 180, 190)
+			end
+			if icon then icon:paint(Color3.fromRGB(160, 160, 170), 1) end
+		end
+	end
+
+	-- Dragging logic (supports Mouse and Touch)
 	local draggingBtn = false
 	local dragStart = Vector2.new(0, 0)
 	local startBtnPos = Vector2.new(0, 0)
-	local touchStartTime = 0
+	local dragStartTime = 0
+	local hasMoved = false
 
-	local function updateBtnState(isOpen)
-		icon:paint(isOpen and Accent or Color3.fromRGB(160, 160, 170), 1)
-		stroke.Color = isOpen and Accent:Lerp(Color3.fromRGB(38, 38, 44), 0.5) or Color3.fromRGB(38, 38, 44)
-	end
-
-	local function handleInputBegan(input)
+	local function onInputBegan(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			draggingBtn = true
-			touchStartTime = tick()
+			hasMoved = false
+			dragStartTime = tick()
 			dragStart = input.UserInputType == Enum.UserInputType.Touch and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
 			startBtnPos = Vector2.new(btnFrame.Position.X.Offset, btnFrame.Position.Y.Offset)
 		end
 	end
 
-	local function handleInputChanged(input)
+	local function onInputChanged(input)
 		if draggingBtn and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			local curPos = input.UserInputType == Enum.UserInputType.Touch and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
 			local delta = curPos - dragStart
-			local newX = clamp(startBtnPos.X + delta.X, 10, Screen.AbsoluteSize.X - btnSize - 10)
-			local newY = clamp(startBtnPos.Y + delta.Y, 10, Screen.AbsoluteSize.Y - btnSize - 10)
+			if delta.Magnitude > 4 then
+				hasMoved = true
+			end
+			local screenW = (Screen and Screen.AbsoluteSize.X > 0) and Screen.AbsoluteSize.X or 800
+			local screenH = (Screen and Screen.AbsoluteSize.Y > 0) and Screen.AbsoluteSize.Y or 600
+			local maxX = math.max(100, screenW - btnW - 10)
+			local maxY = math.max(100, screenH - btnH - 10)
+			local newX = clamp(startBtnPos.X + delta.X, 10, maxX)
+			local newY = clamp(startBtnPos.Y + delta.Y, 10, maxY)
 			btnFrame.Position = UDim2.fromOffset(newX, newY)
 		end
 	end
 
-	local function handleInputEnded(input)
+	local function onInputEnded(input)
 		if draggingBtn and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 			draggingBtn = false
 			local curPos = input.UserInputType == Enum.UserInputType.Touch and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
 			local delta = (curPos - dragStart).Magnitude
-			local duration = tick() - touchStartTime
-			if delta < 8 and duration < 0.5 then
+			local duration = tick() - dragStartTime
+			if delta < 6 and duration < 0.4 then
 				self:Toggle()
 			end
 		end
 	end
 
-	btnFrame.InputBegan:Connect(handleInputBegan)
-	UserInputService.InputChanged:Connect(handleInputChanged)
-	UserInputService.InputEnded:Connect(handleInputEnded)
+	clickBtn.InputBegan:Connect(onInputBegan)
+	UserInputService.InputChanged:Connect(onInputChanged)
+	UserInputService.InputEnded:Connect(onInputEnded)
 
-	btnFrame.MouseEnter:Connect(function()
+	-- Direct Activated fallback
+	clickBtn.Activated:Connect(function()
+		if not hasMoved then
+			self:Toggle()
+		end
+	end)
+
+	-- Hover effects
+	clickBtn.MouseEnter:Connect(function()
 		stroke.Color = Accent
 		btnFrame.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
 	end)
-	btnFrame.MouseLeave:Connect(function()
+	clickBtn.MouseLeave:Connect(function()
 		btnFrame.BackgroundColor3 = Color3.fromRGB(12, 13, 16)
 		updateBtnState(self.frame.Visible)
 	end)
 
 	self.toggleBtn = {
 		frame = btnFrame,
+		button = clickBtn,
+		label = label,
+		dot = dot,
 		updateState = updateBtnState,
 		SetVisible = function(_, visible) btnFrame.Visible = visible end,
 	}
 	updateBtnState(self.frame.Visible)
 	return self.toggleBtn
+end
+
+function Library:CreateToggleButton(opts)
+	if CurrentWindow then return CurrentWindow:CreateToggleButton(opts) end
 end
 
 function WindowMeta:Group(name)
@@ -5339,13 +5434,23 @@ function Library:Unload()
 end
 
 -- Running the file again replaces the previous copy instead of stacking on top of it.
+if type(getgenv) == "function" then
+	pcall(function()
+		getgenv().NeverloseReloaded = Library
+		getgenv().GenerousUI = Library
+		getgenv().Library = Library
+	end)
+end
 if type(_G) == "table" then
 	if type(_G.NeverloseReloaded) == "table" and _G.NeverloseReloaded.Unload then
 		pcall(_G.NeverloseReloaded.Unload, _G.NeverloseReloaded)
 	end
 	_G.NeverloseReloaded = Library
+	_G.GenerousUI = Library
+	_G.Library = Library
 end
 
+-- Auto-run Demo if executed directly
 if typeof(script) == "Instance" and script:IsA("LocalScript") then
 	Library:Demo()
 end
